@@ -1,0 +1,54 @@
+[
+    {
+        "name": "토모리루",
+        "deck": "KirafanAI:12300@1",
+        "difficulty": 1,
+        "masterRules": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            7
+        ]
+    },
+    {
+        "name": "네네",
+        "deck": "KirafanAI:12300@2",
+        "difficulty": 2,
+        "masterRules": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            7
+        ]
+    },
+    {
+        "name": "초강적",
+        "deck": "KirafanAI:12300@3",
+        "difficulty": 3,
+        "masterRules": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            7
+        ]
+    },
+    {
+        "name": "초고난",
+        "deck": "KirafanAI:12300@4",
+        "difficulty": 4,
+        "masterRules": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            7
+        ]
+    }
+]
