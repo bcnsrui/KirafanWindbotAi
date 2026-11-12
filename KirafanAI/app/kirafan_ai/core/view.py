@@ -114,8 +114,8 @@ def view_from_queries(me, turn, turn_player, phase, field, locations, attack=Non
                         continue
                 if rel == 1 and loc == LOCATION_HAND and not public:
                     continue
-                # 마을 (banished face-down) is private: the opponent only sees how many cards it holds
-                if rel == 1 and loc == LOCATION_REMOVED and not (pos & POS_FACEUP):
+                # 마을: the model only gets how many cards the opponent's holds (no card counting), face-up or not
+                if rel == 1 and loc == LOCATION_REMOVED:
                     continue
                 if rel == 1 and loc in (LOCATION_MZONE, LOCATION_SZONE) and not (pos & POS_FACEUP):
                     code = 0

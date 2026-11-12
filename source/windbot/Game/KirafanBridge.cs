@@ -2,7 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Json;
 using System.Text;
+using YGOSharp.OCGWrapper;
 
 namespace WindBot.Game
 {
@@ -40,24 +43,31 @@ namespace WindBot.Game
             return at >= 0 && int.TryParse(deck.Substring(at + 1), out level) ? level : 0;
         }
 
-        /// <summary>Dialogs/KirafanAI_&lt;level&gt;.json for a bot with a level when it exists, else fallback.</summary>
-        public static string DialogName(string deck, string fallback)
+        /// <summary>
+        /// The bot's chat file: Dialogs/KirafanAI_S&lt;summoner&gt;.json (its deck's summoner card), else fallback.
+        /// (kirafan_ai.bridge.server picks the same one for its lines.)
+        /// </summary>
+        public static string DialogName(int summoner, string fallback)
         {
-            int level = Level(deck);
-            string name = "KirafanAI_" + level;
-            string path = Path.Combine(Path.Combine(Program.AssetPath, "Dialogs"), name + ".json");
-            return level > 0 && File.Exists(path) ? name : fallback;
+            string name = "KirafanAI_S" + summoner;
+            return summoner > 0 && File.Exists(Path.Combine(Path.Combine(Program.AssetPath, "Dialogs"), name + ".json"))
+                ? name : fallback;
         }
 
         /// <summary>
-        /// Deck for one duel: a random .ydk from Decks/KirafanAI_&lt;name&gt;/ when that folder has any
-        /// (written by kirafan_ai.bridge.register), else Decks/KirafanAI_&lt;name&gt;.ydk.
+        /// Deck for one duel: a random .ydk from Decks/KirafanAI_&lt;name&gt;_L&lt;level&gt;/ (the level's own decks), else
+        /// from Decks/KirafanAI_&lt;name&gt;/ (written by kirafan_ai.bridge.register), else Decks/KirafanAI_&lt;name&gt;.ydk.
         /// </summary>
-        public static string PickDeck(string name)
+        public static string PickDeck(string name, int level = 0)
         {
-            string dir = Path.Combine(Path.Combine(Program.AssetPath, "Decks"), "KirafanAI_" + name);
-            if (Directory.Exists(dir))
+            string decksDir = Path.Combine(Program.AssetPath, "Decks");
+            foreach (string folder in new[] { level > 0 ? "KirafanAI_" + name + "_L" + level : null, "KirafanAI_" + name })
             {
+                if (folder == null)
+                    continue;
+                string dir = Path.Combine(decksDir, folder);
+                if (!Directory.Exists(dir))
+                    continue;
                 string[] decks = Directory.GetFiles(dir, "*.ydk");
                 if (decks.Length > 0)
                     return Path.GetFullPath(decks[new Random().Next(decks.Length)]);
@@ -78,8 +88,48 @@ namespace WindBot.Game
             return cfg;
         }
 
-        public KirafanBridge(string name, int level)
+        [DataContract]
+        private class SummonerChat
         {
+            [DataMember]
+            public string name { get; set; }
+        }
+
+        /// <summary>
+        /// The bot's name in the room: "name" of Dialogs/KirafanAI_S&lt;summoner&gt;.json, else the summoner card's
+        /// character (its card name without "(소환사 카드)"); EDOPro's "[AI] " prefix kept. current without a summoner.
+        /// </summary>
+        public static string PlayerName(int summoner, string current)
+        {
+            if (summoner <= 0)
+                return current;
+            string name = null;
+            string path = Path.Combine(Path.Combine(Program.AssetPath, "Dialogs"), "KirafanAI_S" + summoner + ".json");
+            try
+            {
+                if (File.Exists(path))
+                    using (FileStream fs = File.OpenRead(path))
+                        name = ((SummonerChat)new DataContractJsonSerializer(typeof(SummonerChat)).ReadObject(fs)).name;
+            }
+            catch (Exception)
+            {
+            }
+            if (string.IsNullOrEmpty(name))
+            {
+                NamedCard card = NamedCard.Get(summoner);
+                name = card == null ? null : card.Name.Replace("(소환사 카드)", "").Trim();
+            }
+            if (string.IsNullOrEmpty(name))
+                return current;
+            string full = (current != null && current.StartsWith("[AI] ") ? "[AI] " : "") + name;
+            return full.Length > 20 ? full.Substring(0, 20) : full;
+        }
+
+        private readonly Action<string> _chat;
+
+        public KirafanBridge(string name, int level, Action<string> chat)
+        {
+            _chat = chat;
             string root = Path.GetFullPath(Path.Combine(Program.AssetPath, "KirafanAI"));
             var cfg = ReadConfig(Path.Combine(root, "bridge.cfg"));
             // paths in bridge.cfg may be relative to WindBot/KirafanAI (portable bundle)
@@ -114,13 +164,23 @@ namespace WindBot.Game
             Logger.WriteLine("KirafanAI bridge started: " + model);
         }
 
-        /// <summary>Sends one game message (message id + body); returns the response, or null.</summary>
+        /// <summary>
+        /// Sends one game message (message id + body); returns the response, or null. Before it the bot may say
+        /// lines in the chat: each comes as length -1, then [u32 size][UTF-8 text].
+        /// </summary>
         public byte[] Handle(byte[] message)
         {
             _input.Write(message.Length);
             _input.Write(message);
             _input.Flush();
             int length = _output.ReadInt32();
+            while (length == -1)
+            {
+                string text = Encoding.UTF8.GetString(_output.ReadBytes(_output.ReadInt32()));
+                if (_chat != null)
+                    _chat(text);
+                length = _output.ReadInt32();
+            }
             return length > 0 ? _output.ReadBytes(length) : null;
         }
 

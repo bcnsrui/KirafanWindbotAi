@@ -69,20 +69,38 @@ namespace WindBot.Game
 
             _room = new Room();
             _duel = new Duel();
-            string dialog = KirafanBridge.IsBridgeDeck(Game.Deck) ? KirafanBridge.DialogName(Game.Deck, Game.Dialog) : Game.Dialog;
+            string dialog = Game.Dialog;
+            if (KirafanBridge.IsBridgeDeck(Game.Deck))
+            {
+                string name = KirafanBridge.ModelName(Game.Deck);
+                int level = KirafanBridge.Level(Game.Deck);
+                // EDOPro passes "AI_<deck>" when another bot was picked as the deck: for a KirafanAI bot that is
+                // its own deck pool (there is no such file), and an unreadable deck falls back to ours
+                string deckFile = Game.DeckFile;
+                if (deckFile != null && deckFile.StartsWith("AI_" + KirafanBridge.Prefix))
+                {
+                    string other = deckFile.Substring(3);
+                    deckFile = KirafanBridge.PickDeck(KirafanBridge.ModelName(other), KirafanBridge.Level(other));
+                }
+                Deck = Deck.Load(deckFile ?? KirafanBridge.PickDeck(name, level));
+                if (Deck == null)
+                {
+                    Logger.WriteLine("KirafanAI: cannot read deck " + deckFile + ", using the bot's own");
+                    deckFile = KirafanBridge.PickDeck(name, level);
+                    Deck = Deck.Load(deckFile);
+                }
+                Logger.WriteLine("KirafanAI deck: " + (deckFile ?? Game.Deck));
+                // its chat: the deck's summoner's (Dialogs/KirafanAI_S<code>.json), else the level's
+                int summoner = Deck != null && Deck.ExtraCards.Count > 0 ? Deck.ExtraCards[0] : 0;
+                dialog = KirafanBridge.DialogName(summoner, Game.Dialog);
+                Game.Username = KirafanBridge.PlayerName(summoner, Game.Username);   // (sent once connected)
+                _bridge = new KirafanBridge(name, level, text => Game.Chat(text, false));
+            }
             _ai = new GameAI(_duel, dialog, Game.Chat, Game.Log, Game.Surrender, Program.AssetPath);
             _ai.Executor = DecksManager.Instantiate(_ai, _duel, Game.Deck);
             if(Game.DeckFile != null)
                 Logger.WriteLine("Custom deck provided, loading: " + Game.DeckFile + ".");
-            if (KirafanBridge.IsBridgeDeck(Game.Deck))
-            {
-                string name = KirafanBridge.ModelName(Game.Deck);
-                _bridge = new KirafanBridge(name, KirafanBridge.Level(Game.Deck));
-                string deckFile = Game.DeckFile ?? KirafanBridge.PickDeck(name);
-                Logger.WriteLine("KirafanAI deck: " + deckFile);
-                Deck = Deck.Load(deckFile);
-            }
-            else
+            if (_bridge == null)
                 Deck = Deck.Load(Game.DeckFile ?? _ai.Executor.Deck);
 
             _select_hint = 0;

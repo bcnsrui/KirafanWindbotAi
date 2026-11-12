@@ -11,7 +11,8 @@ from ..cards import CLASS_RACES, CLASS_NAMES, ATTRIBUTES, ATTRIBUTE_NAMES
 from ..cardtext import text_of, STATUS_COUNTERS
 from ..core.constants import *  # noqa: F401,F403
 from ..core.messages import (POLICY_MESSAGES, NUM_KINDS, ACTIVATE_KINDS, K_BATTLE_ATTACK, K_CARD_PICK, NOOP_DESCS,
-                             K_IDLE_TO_BP, K_IDLE_TO_EP, K_BATTLE_TO_EP, K_BATTLE_TO_M2, K_CHAIN_PASS)
+                             K_IDLE_TO_BP, K_IDLE_TO_EP, K_BATTLE_TO_EP, K_BATTLE_TO_M2, K_CHAIN_PASS,
+                             K_CARD_CANCEL)
 from . import derived
 
 MSG_TYPES = sorted(POLICY_MESSAGES)
@@ -151,7 +152,7 @@ def _loc_onehot(loc, seq):
 
 def _player_feats(view_p, der_p, removed_classes):
     return [
-        view_p.get("lp", 0) / 8000.0,
+        1.0,   # (was LP / 8000: LP is no game measure - scripts only set it for the BGM and to end the game)
         view_p.get("deck", 0) / 60.0,
         view_p.get("hand", 0) / 10.0,
         der_p["dotte"] / 10.0,
@@ -202,6 +203,7 @@ class _Tactics:
                                                                                        else None):
                 self.battle[c["rel"]][c["seq"]] = c
         self.ctx = decision.context
+        self.decision = decision
         self.can_heal = [self._can_heal(rel) for rel in (0, 1)]
         # an opponent battle creamate attacking one of ours right now: (attacker, target)
         self.incoming = None
@@ -832,10 +834,37 @@ class _Tactics:
                 return None if k is None else top(lambda act: act[0] == "attack" and act[1] == a and act[3] == k)
         return None
 
+    def _plan_may_use(self, o):
+        """False when _plan_action_value(o) is None whatever the plan (no search needed for it)."""
+        if o.card is None:
+            return o.kind in (K_IDLE_TO_BP, K_IDLE_TO_EP, K_BATTLE_TO_EP, K_BATTLE_TO_M2)
+        code, con, loc, seq = o.card
+        rel = 0 if con == self.me else 1
+        if o.kind == K_BATTLE_ATTACK:
+            return rel == 0 and loc == LOCATION_MZONE
+        if o.kind in ACTIVATE_KINDS:
+            if rel != 0:
+                return False
+            if loc == LOCATION_MZONE:
+                return o.desc in DAMAGE_DESCS
+            return loc == LOCATION_HAND and (bool(self._buff_of(code, o.desc)[0]) or (
+                o.desc not in COMMON_HEAL_DESCS and any(t[0] == code for t in self.hand_tools())))
+        if o.kind == K_CARD_PICK:
+            return bool(self.ctx and self.ctx[1]) and loc == LOCATION_MZONE
+        return False
+
+    def _plan_needed(self):
+        """Does any option of this decision use the plan? (searching costs the most of all features)"""
+        if not hasattr(self, "_plan_need"):
+            self._plan_need = any(self._plan_may_use(o) for o in self.decision.options)
+        return self._plan_need
+
     def _plan_feats(self, o):
         """[this option is the best plan's next step, best plan's kills / 3 (the opponent healing what it
         can), its kills if the opponent could not heal / 3, kills with this option first / 3, kills it
         gives up against the best plan / 3, the option is a planned action]"""
+        if not self._plan_needed():
+            return [0.0] * 6
         pl = self.plan()
         v = self._plan_action_value(o) if pl is not None else None
         if v is None:
@@ -1315,9 +1344,45 @@ class _Tactics:
         return out
 
 
+SANCTUARY_HINT = (10050112 << 20) | 5   # Kirafan.drawop: choose 0-1 hand card to put under the summoner
+# hand from which one card must go in: the opponent's turn (its end trims the hand to 5; a 드로우+2 card counts 2),
+# our own turn (after its 3 draws; a 드로우+2 card counts 1)
+SANCTUARY_RULE_HAND_OPP = 5
+SANCTUARY_RULE_HAND_OWN = 8
+SANCTUARY_RULE_LIMIT = 10                # 성채석 한도 (summoner defense) from which the model decides again
+SANCTUARY_KEEP_BATTLE = 2                # battle creamates the hand keeps when the rule puts one in
+
+
+def sanctuary_rule(view, decision, db):
+    """Rule: in the draw phase's 성채석 choice, with a big hand (SANCTUARY_RULE_HAND_*) and a 성채석 한도 below
+    SANCTUARY_RULE_LIMIT one hand card goes in - "pick nothing" is taken off the options, and so are the battle
+    creamates while the hand holds no more than SANCTUARY_KEEP_BATTLE of them (unless nothing else is left); the
+    model still picks which card, the one it needs least. Changes decision.options in place."""
+    if decision.hint != SANCTUARY_HINT or decision.msg != MSG_SELECT_CARD or view.get("phase") != PHASE_DRAW:
+        return
+    if view["players"][0].get("summoner_def", 0) >= SANCTUARY_RULE_LIMIT:
+        return
+    own = view["turn_player"] == 0
+    codes = [c["code"] for c in view["cards"] if c["rel"] == 0 and c["loc"] == LOCATION_HAND]
+    hand = sum(2 if not own and text_of(db, c).draw >= 2 else 1 for c in codes)
+    picks = [o for o in decision.options if o.kind == K_CARD_PICK]
+    if hand < (SANCTUARY_RULE_HAND_OWN if own else SANCTUARY_RULE_HAND_OPP) or not picks:
+        return
+
+    def battle(o):
+        card = db.get(o.card[0]) if o.card else None
+        return card is not None and card.is_battle
+
+    if sum(1 for c in codes if db.get(c) is not None and db.get(c).is_battle) <= SANCTUARY_KEEP_BATTLE:
+        picks = [o for o in picks if not battle(o)] or picks
+    decision.options = picks
+
+
 def encode(view, decision, db, der=None):
     """Returns dict with g (global floats), cards/card_codes (token floats, vocab ids),
-    opts (option floats) and opt_ids ([kind, card_vocab, desc_vocab, desc_idx, card_ptr])."""
+    opts (option floats) and opt_ids ([kind, card_vocab, desc_vocab, desc_idx, card_ptr]).
+    Applies sanctuary_rule to decision.options first."""
+    sanctuary_rule(view, decision, db)
     der = der or derived.compute(view, db)
     vocab = db.vocab            # effect descriptions / hints
     card_ids = db.card_vocab    # card identity (all summoners share one id)

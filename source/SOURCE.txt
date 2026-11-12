@@ -1,6 +1,7 @@
 WindBot Ignite (AGPL-3.0, see ../LICENSE.txt), modified to hand duels to the KirafanAI bot.
 Upstream: https://github.com/ProjectIgnis/windbot (commit bffe6b62679c8b2fafea8f59740e03a132517da4)
 Changed / added files:
+  ExecutorBase/Game/Dialogs.cs
   Game/GameBehavior.cs
   Game/KirafanBridge.cs
   WindBot.csproj

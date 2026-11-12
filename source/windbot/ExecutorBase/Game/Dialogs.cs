@@ -189,6 +189,8 @@ namespace WindBot.Game.AI
 
         private void InternalSendMessage(IList<string> array, params object[] opts)
         {
+            if (array == null || array.Count == 0)   // (a key the dialog file leaves out)
+                return;
             string message = string.Format(array[Rand.Next(array.Count)], opts);
             if (message != "")
                 Chat(message, false);
@@ -196,6 +198,8 @@ namespace WindBot.Game.AI
 
         private void InternalSendMessageForced(IList<string> array, params object[] opts)
         {
+            if (array == null || array.Count == 0)
+                return;
             string message = string.Format(array[Rand.Next(array.Count)], opts);
             if (message != "")
                 Chat(message, true);
